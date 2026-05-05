@@ -5,6 +5,137 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.5.2] - 2026-05-04
+
+### Fixed — `tests/terse-hooks-shell.test.ts` flaked on Windows runners
+
+`"less tokens please" activates the default mode` failed intermittently
+on `windows-latest, Node 20` with `ENOENT` reading
+`.rulebook/.terse-mode`, even though the hook had written it
+successfully (CI run #25346776699). Root cause: the hook writes via
+`mktemp` + `mv -f`; on GitHub-hosted Windows runners, antivirus / filter
+drivers can briefly hold the renamed file invisible to other processes
+after `MoveFileExW` returns success. macOS, Linux, and faster Windows
+runners win the race; the slow Windows-Node20 runner occasionally
+loses it.
+
+**Fix**: replaced every `readFileSync(...)` after a `run()` in
+`tests/terse-hooks-shell.test.ts` with a `readFlag()` helper that polls
+`existsSync` up to ~1s before reading. No-op cost on POSIX.
+
+### Fixed — `rulebook init` produced CRLF shell scripts that broke Claude Code on macOS/Linux
+
+Twelve `.sh` templates in `templates/` were stored on disk with CRLF
+line terminators despite `.gitattributes` declaring `*.sh text eol=lf`.
+On macOS/Linux, bash interprets a trailing `\r` as part of the command
+(`set -\r u` is invalid, `function() {\r` fails to parse), so every
+hook crashed at session start. Because three of the affected hooks fire
+on `SessionStart`, `UserPromptSubmit`, and `Stop`, Claude Code became
+completely unresponsive — the user reported zero assistant responses
+across a full session.
+
+**Root cause**: templates were authored on Windows and committed without
+honoring the `.gitattributes` rule, so the npm package shipped CRLF
+bytes verbatim.
+
+**Fix**:
+
+1. **Re-normalized** twelve template files to LF
+   (`templates/hooks/{terse-activate,terse-mode-tracker,resume-from-handoff,on-compact-reinject,check-context-and-handoff,enforce-team-for-background-agents}.sh`,
+   `templates/ralph/ralph-{init,run,status,pause,history}.sh`,
+   `templates/skills/workflows/ralph/install.sh`).
+2. **Defense in depth in init**: new `writeShellScript` /
+   `normalizeLineEndings` helpers in `src/utils/file-system.ts`. Wired
+   into `claude-settings-manager.ts` (hook installation),
+   `ralph-scripts.ts` (Ralph script copy), and `git-hooks.ts`
+   (pre-commit/pre-push wrappers). Every `.sh` written by `rulebook
+   init` is now guaranteed LF, regardless of how the template is stored
+   on disk. POSIX writes also set mode `0o755`.
+3. **CI guard**: `scripts/check-sh-eol.mjs` (run via `npm run
+   check:sh-eol`) fails CI if any tracked `*.sh` / `*.bash` file under
+   `templates/` or `scripts/` contains a CR byte. Wired into
+   `.github/workflows/lint.yml` so a regression cannot reach a
+   published version again.
+4. **Regression tests** in `tests/file-system.test.ts`,
+   `tests/claude-settings-manager.test.ts`, and
+   `tests/ralph-scripts.test.ts` assert zero CR bytes in every emitted
+   `.sh` file.
+
+Affected versions: 5.4.x and 5.5.x. Workaround for already-installed
+projects: `tr -d '\r' < hook.sh > hook.sh.tmp && mv hook.sh.tmp hook.sh
+&& chmod +x hook.sh` for each broken script in `.claude/hooks/`.
+
+## [5.5.1] - 2026-05-01
+
+### Added — Delegation & parallelism rules in CLAUDE.md / AGENTS.md
+
+Reinforces existing agent/team/skill machinery that was being
+under-used in practice. Two surfaces:
+
+1. **`templates/core/CLAUDE_MD_v2.md`** — new "Delegation &
+   parallelism (highest precedence)" section right after the eight
+   critical rules. Five mandates:
+   - Delegate by default (don't implement inline when an agent fits).
+   - Parallelize independent work (single message, multiple `Agent`
+     tool-use blocks).
+   - Use Teams for multi-specialist work (background `Agent` without
+     `team_name` is blocked by the existing enforcement hook).
+   - Create new skills/agents when the gap is real (same multi-step
+     prompt twice → skill; recurring across projects → agent).
+   - Foreground vs background distinction.
+
+2. **`templates/core/AGENTS_LEAN.md`** — replaces the one-line
+   "delegate, parallelize" footer in the Agent Delegation section
+   with two structured subsections: "Mandatory delegation rules"
+   and "When to create a new skill or agent" (skill vs agent
+   triggers).
+
+Mirrored in this repo's local `CLAUDE.md` + `AGENTS.md`. Net cost:
+~25 extra lines per project. No code changes; pure prompt
+reinforcement.
+
+## [5.5.0] - 2026-05-01
+
+### Added — Karpathy editing-discipline guidelines (inline + skill)
+
+Adopts the four behavioral principles from
+[forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills),
+grounded in Andrej Karpathy's
+[observations on LLM coding pitfalls](https://x.com/karpathy/status/2015883857489522876).
+Two delivery surfaces:
+
+1. **Inlined in generated `CLAUDE.md` and `AGENTS.md`.** New
+   "Editing discipline (Karpathy-inspired)" section in
+   `templates/core/CLAUDE_MD_v2.md` and
+   `templates/core/AGENTS_LEAN.md`. Every project that runs
+   `rulebook init` or `rulebook update` from 5.5.0 onward gets the
+   four principles in both files; the AGENTS.md projection
+   propagates to Cursor / Windsurf / Cline / Copilot / Codex /
+   Gemini through their existing references.
+2. **New skill** `templates/skills/core/karpathy-guidelines/SKILL.md`
+   — a dedicated invocable surface (`/karpathy-guidelines` or
+   "follow karpathy discipline"). Added to `INVOCABLE_CORE_SKILLS`
+   so `installSkillsFromSource` copies it to `.claude/skills/` on
+   init/update. Skill body kept ≤80 lines; total context cost
+   < 1KB per session.
+
+The four principles:
+
+1. **Think before coding** — surface assumptions, present
+   interpretations, ask when unclear.
+2. **Simplicity first** — minimum code, no speculative abstractions
+   or unrequested flexibility.
+3. **Surgical changes** — touch only what the request requires; no
+   opportunistic refactors of adjacent code.
+4. **Goal-driven execution** — define verifiable success criteria
+   upfront so multi-step tasks loop independently.
+
+Targets gaps not covered by existing Tier 1 prohibitions —
+particularly **surgical changes** (no rule today forbids
+opportunistic refactor) and **simplicity first**
+(`no-shortcuts.md` forbids stubs but not bloat). Test counts
+updated: `agent-delegation.test.ts` skill-dir count 19→20.
+
 ## [5.4.0] - 2026-04-20
 
 ### Added — “Terse mode”: structurally-enforced output compression

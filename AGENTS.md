@@ -16,6 +16,15 @@ These override everything else. Violation = output rejected.
 7. **Follow task sequence.** Execute `tasks.md` items in the EXACT order listed. No reordering, no cherry-picking, no starting Phase N+1 before Phase N is 100% done. The list is an ORDER, not a MENU.
 8. **Execute the full task in one turn.** Never stop mid-task to ask "should I proceed?" or "want me to also...?". Make autonomous decisions within scope. Only ask for genuine ambiguity, destructive ops, or impossible tasks.
 
+## Editing Discipline (Karpathy-inspired)
+
+Behavioral guidelines that reduce common LLM coding mistakes. Adapted from [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills), grounded in [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876).
+
+1. **Think before coding.** State assumptions explicitly. If multiple interpretations exist, present them — don't pick silently. If a simpler approach exists, say so. If something is unclear, stop and ask. Don't hide confusion.
+2. **Simplicity first.** Minimum code that solves the problem. No features beyond what was asked, no abstractions for single-use code, no "flexibility" that wasn't requested, no error handling for impossible scenarios. If you write 200 lines and 50 would do, rewrite.
+3. **Surgical changes.** Touch only what you must. Don't "improve" adjacent code, comments, or formatting. Don't refactor things that aren't broken. Match existing style. If you notice unrelated dead code, mention it — don't delete it. Every changed line must trace directly to the user's request.
+4. **Goal-driven execution.** Define verifiable success criteria upfront. "Add validation" → "write tests for invalid inputs, then make them pass." For multi-step tasks, state a brief plan: `[step] → verify: [check]`. Strong criteria let you loop independently; weak criteria require constant clarification.
+
 ## Critical Rules
 
 - **ALWAYS read `/.rulebook/specs/RULEBOOK.md`** before creating tasks.
@@ -187,7 +196,23 @@ If this is part of a multi-project workspace, every Rulebook MCP call MUST pass 
 | Build/CI | build-engineer | sonnet |
 | Security | security-reviewer | haiku |
 
-Rules: never write code directly in main conversation — delegate. Use haiku for read-only tasks. Launch independent agents in parallel.
+### Mandatory delegation rules
+
+- **Never implement directly in the main conversation when an agent fits.** The main thread orchestrates; agents do the work.
+- **Read-only work → haiku researcher.** Cheap, isolates context.
+- **Independent work runs in parallel.** Multiple `Agent` tool-use blocks in a single message. Sequential dispatching of independent units is wrong by default.
+- **Multi-specialist work uses Teams.** Background `Agent` calls without `team_name` are blocked by the enforcement hook (see Multi-Agent Teams above).
+- **Foreground agents** when the result blocks your next step. **Background agents** only inside Teams so `SendMessage` works.
+
+### When to create a new skill or agent
+
+Lift to a skill / agent instead of repeating instructions:
+
+- **Same multi-step prompt twice in one session** → make a skill (`templates/skills/<category>/<name>/SKILL.md`).
+- **Recurring class of work across projects** → make an agent definition (`.claude/agents/<role>.md`) and add a row to the delegation table above.
+- **A workflow needs a specific persona / tool set** → agent. **A behavior modifier the user invokes on demand** → skill.
+
+Default to creating, not improvising. The template scaffolding is cheap; ad-hoc context-window churn is expensive.
 
 ## Plans & Session Continuity
 
